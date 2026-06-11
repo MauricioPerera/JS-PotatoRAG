@@ -155,7 +155,7 @@ Registralo en tu cliente MCP (ej. Claude Code / Claude Desktop `mcpServers`):
   "mcpServers": {
     "potatorag-memory": {
       "command": "node",
-      "args": ["D:/repos/js rag/JS-PotatoRAG/mcp-memory-server.mjs"],
+      "args": ["/ruta/a/JS-PotatoRAG/mcp-memory-server.mjs"],
       "env": {
         "MEMORY_API_URL": "http://127.0.0.1:3005",
         "MEMORY_NAMESPACE": "default",
@@ -204,14 +204,16 @@ Luego commiteás `public/` a tu rama de Pages.
 
 ## ⚙️ Estructura del Proyecto
 
-*   `server.js`: Servidor Express que gestiona el enrutamiento de peticiones, la carga de los modelos ONNX y la decodificación de flujos SSE.
-*   `wasm-vector-store.cjs` y `wasm-polar-store.cjs`: Wrappers FFI de JavaScript que gestionan los punteros de memoria lineal para transferir datos al módulo WebAssembly.
-*   `rust_polar.wasm`: Binario de WebAssembly compilado a partir del motor Rust.
-*   `public/`: Carpeta que contiene la aplicación PWA (HTML, estilos CSS, manifiesto de instalación y Service Worker).
-*   `rust_polar/`: Código fuente de Rust del motor de búsqueda y cuantización polar de 3 bits.
-*   `docs/QUANTIZATION.md`: Cómo funciona la cuantización polar, sus límites medidos, atribución (PolarQuant/TurboQuant) y cuándo conviene optimizarla.
-*   `benchmark_wasm.cjs`: Script para comparar el rendimiento de búsqueda entre WASM y JavaScript puro.
-*   `benchmark_onnx.js`: Script para medir los tiempos de inferencia del extractor de embeddings local.
+*   `server.js`: Servidor Express. Endpoints: `/api/ingest`, `/api/query`, `/api/chat` (SSE), `/api/export`, `/api/import`, `/api/memory/{write,search,forget,list}`, `/api/stats`. Carga los modelos ONNX de forma diferida.
+*   `js-vector-store.js`: Librería de la base vectorial (JS puro, sin dependencias): `PolarQuantizedStore` y otros stores, `MemoryStorageAdapter`/`FileStorageAdapter`, BM25, búsqueda híbrida. Corre en Node y en el navegador.
+*   `wasm-vector-store.cjs` y `wasm-polar-store.cjs`: Wrappers FFI que pasan datos al módulo WebAssembly (`exportCollection`/`importCollection`, `remove`, `search` con filtro, `list`).
+*   `rust_polar/` y `rust_polar.wasm`: Motor Rust de búsqueda/cuantización polar 3-bit y su binario WASM. Recompilá con `rust_polar/build.sh` si tocás `lib.rs`.
+*   `mcp-memory-server.mjs`: Servidor MCP que expone la memoria (`memory_write/search/forget/list`) a un agente (cliente delgado sobre la API HTTP). `npm run mcp`.
+*   `scripts/publish-index.js`: Publica una colección como índice estático en `public/rag/` para consumo por agentes. `npm run publish:index`.
+*   `public/`: PWA (HTML, CSS, Service Worker), la copia servida de `js-vector-store.js`, el `llms.txt` + `skills/rag-query/SKILL.md`, y los stores de navegador. `public/vendor/transformers.min.js` vendorizado.
+*   `docs/QUANTIZATION.md`: Cómo funciona la cuantización polar, límites medidos, atribución (PolarQuant/TurboQuant) y cuándo optimizarla.
+*   `test/`: Suite `node --test` (paridad JS↔WASM, recall, export/import, memoria, consumo por agente, sincronía de copias). `npm test`.
+*   `benchmark_wasm.cjs`, `benchmark.js`, `benchmark_onnx.js`, `benchmark_gemma3.js`, `benchmark_recall.js`: Benchmarks de velocidad, RAG end-to-end, embeddings, generación y recall@k.
 
 ---
 
