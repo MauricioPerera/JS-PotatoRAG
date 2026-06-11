@@ -1,4 +1,4 @@
-const CACHE_NAME = 'potatorag-cache-v2';
+const CACHE_NAME = 'potatorag-cache-v3';
 const ASSETS = [
   '/',
   '/index.html',
@@ -9,7 +9,8 @@ const ASSETS = [
   '/js-vector-store.js',
   '/wasm-polar-store-browser.js',
   '/wasm-vector-store-browser.js',
-  '/rust_polar.wasm'
+  '/rust_polar.wasm',
+  '/vendor/transformers.min.js'
 ];
 
 // Install Event - Pre-cache assets

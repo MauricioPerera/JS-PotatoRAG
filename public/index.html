@@ -117,6 +117,13 @@
           <span class="stat-val" id="stat-chunks">0</span>
         </div>
       </div>
+
+      <!-- DB Export / Import -->
+      <div class="db-tools">
+        <button id="btn-export" class="btn btn-secondary" title="Download this collection as a portable file">⬇️ Export DB</button>
+        <button id="btn-import" class="btn btn-secondary" title="Load a previously exported collection">⬆️ Import DB</button>
+        <input type="file" id="import-input" accept=".json,application/json" style="display: none;">
+      </div>
     </aside>
 
     <!-- Main Content Chat -->
@@ -176,7 +183,7 @@
   <script src="wasm-polar-store-browser.js"></script>
   <script src="wasm-vector-store-browser.js"></script>
   <script type="module">
-    import { pipeline, env, TextStreamer } from 'https://cdn.jsdelivr.net/npm/@huggingface/transformers@3.0.0-alpha.19/dist/transformers.min.js';
+    import { pipeline, env, TextStreamer } from './vendor/transformers.min.js';
     env.allowLocalModels = false;
     env.backends.onnx.wasm.proxy = false; // Disable proxy to fix Module.MountedFiles error for external weights
     window.Transformers = { pipeline, env, TextStreamer };
@@ -882,6 +889,91 @@
     window.addEventListener('appinstalled', () => {
       console.log('App installed successfully');
       btnInstall.style.display = 'none';
+    });
+
+    // ── DB Export / Import ─────────────────────────────────────
+    const btnExport = document.getElementById('btn-export');
+    const btnImport = document.getElementById('btn-import');
+    const importInput = document.getElementById('import-input');
+
+    function downloadJson(filename, obj) {
+      const blob = new Blob([JSON.stringify(obj)], { type: 'application/json' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = filename;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      URL.revokeObjectURL(url);
+    }
+
+    btnExport.addEventListener('click', async () => {
+      try {
+        const settings = getActiveSettings();
+        let data;
+        if (isServerlessMode) {
+          if (!browserStore) await initBrowserDB();
+          const dim = settings.embedSource !== 'local' && settings.embedDimension
+            ? (parseInt(settings.embedDimension) || 384) : (browserStore.dim);
+          const collection = getCollectionName(settings.embedModel || 'Xenova/all-MiniLM-L6-v2', dim);
+          if (browserStore.count(collection) === 0) {
+            showStatus('Nothing to export: collection is empty.', 'error');
+            return;
+          }
+          data = browserStore.exportCollection(collection);
+        } else {
+          const res = await fetch('/api/export', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ settings })
+          });
+          if (!res.ok) {
+            const err = await res.json().catch(() => ({}));
+            throw new Error(err.error || `Export failed (${res.status})`);
+          }
+          data = await res.json();
+        }
+        downloadJson(`${data.collection}.potatorag.json`, data);
+        showStatus(`Exported ${data.count} chunks from '${data.collection}'.`, 'success');
+      } catch (err) {
+        showStatus('Export failed: ' + err.message, 'error');
+      }
+    });
+
+    btnImport.addEventListener('click', () => importInput.click());
+
+    importInput.addEventListener('change', async (e) => {
+      const file = e.target.files[0];
+      if (!file) return;
+      try {
+        const data = JSON.parse(await file.text());
+        if (!data || data.format !== 'potatorag-export') {
+          throw new Error('Not a PotatoRAG export file.');
+        }
+        let result;
+        if (isServerlessMode) {
+          if (!browserStore) await initBrowserDB();
+          if (data.dim !== browserStore.dim) {
+            throw new Error(`Export dim=${data.dim} but the active browser store uses dim=${browserStore.dim}. Switch embedding settings to match, then retry.`);
+          }
+          result = browserStore.importCollection(data, { mode: 'replace' });
+        } else {
+          const res = await fetch('/api/import', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ data, mode: 'replace' })
+          });
+          result = await res.json();
+          if (!res.ok || result.error) throw new Error(result.error || `Import failed (${res.status})`);
+        }
+        showStatus(`Imported ${result.imported} chunks into '${result.collection}' (total ${result.total}).`, 'success');
+        updateStats();
+      } catch (err) {
+        showStatus('Import failed: ' + err.message, 'error');
+      } finally {
+        importInput.value = '';
+      }
     });
 
     // Initial load

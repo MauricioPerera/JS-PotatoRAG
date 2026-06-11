@@ -98,7 +98,7 @@ class WasmPolarStore {
     
     // Allocate output buffers
     const outIndicesPtr = wasmExports.alloc(actualLimit * 4);
-    const outScoresPtr = wasmExports.alloc(actualLimit * 4); // Wait, this is a typo in previous code! Emits a bug if not fixed!
+    const outScoresPtr = wasmExports.alloc(actualLimit * 4);
     
     // Call Rust search
     wasmExports.cosine_polar_search(

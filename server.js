@@ -1,16 +1,21 @@
 const express = require('express');
 const cors = require('cors');
+const crypto = require('crypto');
 const path = require('path');
 const WasmPolarQuantizedStore = require('./wasm-vector-store.cjs');
 
 const app = express();
 const PORT = process.env.PORT || 3005;
+const HOST = process.env.HOST || '127.0.0.1'; // localhost-only by default; set HOST=0.0.0.0 to expose
 const VDB_PATH = path.join(__dirname, 'data', 'vectors');
 const DIMENSION_DEFAULT = 768;
 
-// Initialize Express middleware
-app.use(cors());
-app.use(express.json());
+// CORS: the UI is served same-origin from this app, so only allow the local
+// origin. An open `cors()` lets any web page in the browser read/write the
+// vector DB and drive the LLM. Override with ALLOWED_ORIGIN if you proxy it.
+const ALLOWED_ORIGIN = process.env.ALLOWED_ORIGIN || `http://localhost:${PORT}`;
+app.use(cors({ origin: [ALLOWED_ORIGIN, `http://127.0.0.1:${PORT}`] }));
+app.use(express.json({ limit: process.env.JSON_LIMIT || '8mb' }));
 app.use(express.static(path.join(__dirname, 'public')));
 
 // Dynamic Vector Stores factory
@@ -26,15 +31,29 @@ function getStore(dim) {
 }
 
 let extractor = null;
+let extractorPromise = null;
 let generator = null;
 
-async function initEmbedder() {
-  console.log('Loading local EmbeddingGemma ONNX model...');
-  const { pipeline } = await import('@huggingface/transformers');
-  extractor = await pipeline('feature-extraction', 'onnx-community/embeddinggemma-300m-ONNX', {
-    dtype: 'q8'
-  });
-  console.log('Local embedding model initialized.');
+// Lazy: only load the ~300MB local embedder when a request actually needs
+// `embedSource: 'local'`. Loading it eagerly at boot blocks startup (and, if it
+// failed, killed the process) even when the user configured Ollama/LM Studio.
+async function getExtractor() {
+  if (extractor) return extractor;
+  if (!extractorPromise) {
+    extractorPromise = (async () => {
+      console.log('Loading local EmbeddingGemma ONNX model...');
+      const { pipeline } = await import('@huggingface/transformers');
+      extractor = await pipeline('feature-extraction', 'onnx-community/embeddinggemma-300m-ONNX', {
+        dtype: 'q8'
+      });
+      console.log('Local embedding model initialized.');
+      return extractor;
+    })().catch(err => {
+      extractorPromise = null; // allow retry on a later request
+      throw err;
+    });
+  }
+  return extractorPromise;
 }
 
 async function getGenerator() {
@@ -68,10 +87,8 @@ function getCollectionName(modelName, dimension) {
 
 async function getEmbedding(text, config) {
   if (config.embedSource === 'local') {
-    if (!extractor) {
-      throw new Error('Local embedding extractor is not initialized yet.');
-    }
-    const output = await extractor(text, { pooling: 'mean', normalize: true });
+    const ext = await getExtractor();
+    const output = await ext(text, { pooling: 'mean', normalize: true });
     return Array.from(output.data);
   }
 
@@ -135,7 +152,12 @@ function chunkText(text, chunkSize = 200, overlap = 50) {
   return chunks;
 }
 
-// Endpoint: Ingest text document
+// Serialize ingests: the in-memory stores are mutated without locking, and the
+// handler awaits between reads and writes. Two concurrent ingests would
+// interleave and (with the old `doc-${count}` scheme) collide IDs, overwriting
+// each other's chunks. A simple promise chain makes ingest atomic per process.
+let ingestQueue = Promise.resolve();
+
 app.post('/api/ingest', async (req, res) => {
   try {
     const { text, settings } = req.body;
@@ -143,38 +165,42 @@ app.post('/api/ingest', async (req, res) => {
       return res.status(400).json({ error: 'Text content is required' });
     }
 
-    const config = getSettings(settings);
-    const chunks = chunkText(text);
-    if (chunks.length === 0) {
-      return res.json({ success: true, count: 0 });
-    }
+    const result = await (ingestQueue = ingestQueue.then(
+      () => doIngest(text, settings),
+      () => doIngest(text, settings) // keep the chain alive even if a prior ingest threw
+    ));
 
-    const collection = getCollectionName(config.embedModel, config.embedDimension);
-    const store = getStore(config.embedDimension);
-
-    console.log(`Ingesting ${chunks.length} chunks into collection '${collection}'...`);
-    
-    let count = 0;
-    const existingCount = store.count(collection);
-    
-    for (let i = 0; i < chunks.length; i++) {
-      const chunk = chunks[i];
-      const embedding = await getEmbedding(chunk, config);
-      const docId = `doc-${existingCount + count}`;
-      
-      store.set(collection, docId, embedding, { text: chunk });
-      count++;
-    }
-
-    store.flush();
-    console.log(`Ingested ${count} chunks. Total database size: ${store.count(collection)}`);
-    
-    res.json({ success: true, count, total: store.count(collection) });
+    res.json({ success: true, count: result.count, total: result.total });
   } catch (err) {
     console.error('Ingestion error:', err);
     res.status(500).json({ error: err.message });
   }
 });
+
+async function doIngest(text, settings) {
+  const config = getSettings(settings);
+  const chunks = chunkText(text);
+  if (chunks.length === 0) return { count: 0, total: 0 };
+
+  const collection = getCollectionName(config.embedModel, config.embedDimension);
+  const store = getStore(config.embedDimension);
+
+  console.log(`Ingesting ${chunks.length} chunks into collection '${collection}'...`);
+
+  let count = 0;
+  for (let i = 0; i < chunks.length; i++) {
+    const chunk = chunks[i];
+    const embedding = await getEmbedding(chunk, config);
+    const docId = `doc-${crypto.randomUUID()}`;
+    store.set(collection, docId, embedding, { text: chunk });
+    count++;
+  }
+
+  store.flush();
+  const total = store.count(collection);
+  console.log(`Ingested ${count} chunks. Total database size: ${total}`);
+  return { count, total };
+}
 
 // Endpoint: Search/Query context
 app.post('/api/query', async (req, res) => {
@@ -195,7 +221,9 @@ app.post('/api/query', async (req, res) => {
     const queryEmb = await getEmbedding(query, config);
 
     const start = process.hrtime();
-    const matches = store.search(collection, queryEmb, 3, 0, 'cosine');
+    // The WASM store always scores by polar-cosine; its search(col, query, limit)
+    // takes only 3 args (the extra dimSlice/metric the JS store accepts are N/A here).
+    const matches = store.search(collection, queryEmb, 3);
     const [seconds, nanoseconds] = process.hrtime(start);
     const searchTimeMs = seconds * 1000 + nanoseconds / 1000000;
 
@@ -361,6 +389,192 @@ app.post('/api/chat', async (req, res) => {
   }
 });
 
+// Endpoint: Export a collection as a portable, self-contained JSON artifact.
+app.post('/api/export', (req, res) => {
+  try {
+    const { settings } = req.body;
+    const config = getSettings(settings);
+    const collection = getCollectionName(config.embedModel, config.embedDimension);
+    const store = getStore(config.embedDimension);
+
+    if (store.count(collection) === 0) {
+      return res.status(404).json({ error: `Collection '${collection}' is empty or does not exist.` });
+    }
+
+    const data = store.exportCollection(collection);
+    res.setHeader('Content-Disposition', `attachment; filename="${collection}.potatorag.json"`);
+    res.json(data);
+  } catch (err) {
+    console.error('Export error:', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Endpoint: Import a previously exported collection.
+app.post('/api/import', (req, res) => {
+  try {
+    const { data, mode } = req.body;
+    if (!data || data.format !== 'potatorag-export') {
+      return res.status(400).json({ error: 'Body must include a valid potatorag-export object in `data`.' });
+    }
+    const dim = parseInt(data.dim) || DIMENSION_DEFAULT;
+    const store = getStore(dim);
+    const result = store.importCollection(data, { mode: mode === 'merge' ? 'merge' : 'replace' });
+    res.json({ success: true, ...result });
+  } catch (err) {
+    console.error('Import error:', err);
+    res.status(400).json({ error: err.message });
+  }
+});
+
+// ===========================================================================
+// AGENT MEMORY API
+// A namespaced, filterable read/write/delete surface over the same vector store,
+// designed for an agent to persist and recall memories locally. Each memory is
+// one discrete record (text + tags + createdAt), addressable by id.
+// ===========================================================================
+
+function getMemoryCollection(namespace, model, dim) {
+  const ns = (namespace || 'default').replace(/[^a-zA-Z0-9]/g, '_');
+  const m = (model || 'local').replace(/[^a-zA-Z0-9]/g, '_');
+  return `mem_${ns}_${m}_${dim}`;
+}
+
+function tagIntersect(metaTags, queryTags) {
+  if (!Array.isArray(queryTags) || queryTags.length === 0) return true;
+  if (!Array.isArray(metaTags)) return false;
+  return queryTags.some(t => metaTags.includes(t));
+}
+
+let memoryQueue = Promise.resolve();
+
+// Write a memory. Body: { text, tags?, namespace?, id?, metadata?, settings? }
+app.post('/api/memory/write', async (req, res) => {
+  try {
+    const { text } = req.body;
+    if (!text || String(text).trim() === '') {
+      return res.status(400).json({ error: 'Memory text is required.' });
+    }
+    const result = await (memoryQueue = memoryQueue.then(
+      () => doMemoryWrite(req.body),
+      () => doMemoryWrite(req.body)
+    ));
+    res.json({ success: true, ...result });
+  } catch (err) {
+    console.error('Memory write error:', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+async function doMemoryWrite(body) {
+  const { text, tags, namespace, id, metadata } = body;
+  const config = getSettings(body.settings);
+  const collection = getMemoryCollection(namespace, config.embedModel, config.embedDimension);
+  const store = getStore(config.embedDimension);
+
+  const embedding = await getEmbedding(String(text), config);
+  const memId = id || `mem-${crypto.randomUUID()}`;
+  const meta = {
+    ...(metadata || {}),
+    text: String(text),
+    tags: Array.isArray(tags) ? tags : [],
+    namespace: namespace || 'default',
+    createdAt: new Date().toISOString(),
+  };
+  store.set(collection, memId, embedding, meta);
+  store.flush();
+  return { id: memId, namespace: namespace || 'default', collection, total: store.count(collection) };
+}
+
+// Search memories. Body: { query, k?, namespace?, tags?, filter?, settings? }
+app.post('/api/memory/search', async (req, res) => {
+  try {
+    const { query, k, namespace, tags, filter } = req.body;
+    if (!query) return res.status(400).json({ error: 'query is required.' });
+
+    const config = getSettings(req.body.settings);
+    const collection = getMemoryCollection(namespace, config.embedModel, config.embedDimension);
+    const store = getStore(config.embedDimension);
+    if (store.count(collection) === 0) return res.json({ results: [] });
+
+    const limit = parseInt(k) || 5;
+    const queryEmb = await getEmbedding(String(query), config);
+
+    // Fetch extra when tag-filtering (tags use array-intersection, not matchFilter).
+    const wantTags = Array.isArray(tags) && tags.length > 0;
+    const fetchN = wantTags ? Math.max(limit * 5, 50) : limit;
+    let matches = store.search(collection, queryEmb, fetchN, filter || null);
+    if (wantTags) matches = matches.filter(m => tagIntersect(m.metadata.tags, tags)).slice(0, limit);
+
+    res.json({
+      results: matches.map(m => ({
+        id: m.id,
+        score: m.score,
+        text: m.metadata.text,
+        tags: m.metadata.tags || [],
+        createdAt: m.metadata.createdAt,
+        metadata: m.metadata,
+      })),
+    });
+  } catch (err) {
+    console.error('Memory search error:', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Forget memories. Body: { id?, namespace?, tags?, filter?, settings? }
+app.post('/api/memory/forget', async (req, res) => {
+  try {
+    const { id, namespace, tags, filter } = req.body;
+    const config = getSettings(req.body.settings);
+    const collection = getMemoryCollection(namespace, config.embedModel, config.embedDimension);
+    const store = getStore(config.embedDimension);
+
+    let removed = 0;
+    if (id) {
+      if (store.remove(collection, id)) removed = 1;
+    } else if (filter || (Array.isArray(tags) && tags.length > 0)) {
+      const candidates = store.list(collection, filter || null)
+        .filter(r => tagIntersect(r.metadata.tags, tags));
+      for (const c of candidates) if (store.remove(collection, c.id)) removed++;
+    } else {
+      return res.status(400).json({ error: 'Provide an id, tags, or a filter to forget.' });
+    }
+    store.flush();
+    res.json({ success: true, removed, total: store.count(collection) });
+  } catch (err) {
+    console.error('Memory forget error:', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// List memories. Body: { namespace?, limit?, filter?, tags?, settings? }
+app.post('/api/memory/list', (req, res) => {
+  try {
+    const { namespace, limit, filter, tags } = req.body;
+    const config = getSettings(req.body.settings);
+    const collection = getMemoryCollection(namespace, config.embedModel, config.embedDimension);
+    const store = getStore(config.embedDimension);
+
+    let items = store.list(collection, filter || null)
+      .filter(r => tagIntersect(r.metadata.tags, tags));
+    if (limit) items = items.slice(0, parseInt(limit));
+
+    res.json({
+      count: items.length,
+      items: items.map(r => ({
+        id: r.id,
+        text: r.metadata.text,
+        tags: r.metadata.tags || [],
+        createdAt: r.metadata.createdAt,
+      })),
+    });
+  } catch (err) {
+    console.error('Memory list error:', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // Endpoint: DB Stats (receives dynamic settings)
 app.post('/api/stats', (req, res) => {
   try {
@@ -383,15 +597,11 @@ app.post('/api/stats', (req, res) => {
   }
 });
 
-initEmbedder().then(() => {
-  app.listen(PORT, () => {
-    console.log(`=======================================================`);
-    console.log(`🚀 JS-PotatoRAG backend running on http://localhost:${PORT}`);
-    console.log(`Database directory: ${VDB_PATH}`);
-    console.log(`Embedding model: Dynamic (Local ONNX/WASM or Remote API)`);
-    console.log(`=======================================================`);
-  });
-}).catch(err => {
-  console.error('Failed to initialize local embedding model:', err);
-  process.exit(1);
+app.listen(PORT, HOST, () => {
+  console.log(`=======================================================`);
+  console.log(`🚀 JS-PotatoRAG backend running on http://${HOST}:${PORT}`);
+  console.log(`Database directory: ${VDB_PATH}`);
+  console.log(`Embedding model: Dynamic (Local ONNX/WASM or Remote API)`);
+  console.log(`Local embedder loads lazily on first 'local' embed request.`);
+  console.log(`=======================================================`);
 });

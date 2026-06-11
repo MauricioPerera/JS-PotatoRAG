@@ -1211,12 +1211,15 @@ class PolarQuantizedStore {
   _binFile(col)  { return `${col}.p3.bin`; }
   _jsonFile(col) { return `${col}.p3.json`; }
 
-  /** PRNG determinista (xorshift32) */
+  /** PRNG determinista (xorshift32).
+   *  Replica EXACTAMENTE la semantica u32 de Rust (rust_polar/src/lib.rs):
+   *  shifts logicos sobre un valor sin signo. Usar `>>` (aritmetico) aqui
+   *  hace divergir la rotacion y rompe la compatibilidad binaria con el .wasm. */
   _xorshift(state) {
-    state ^= state << 13;
-    state ^= state >> 17;
-    state ^= state << 5;
-    return state >>> 0;
+    state = (state ^ (state << 13)) >>> 0;
+    state = (state ^ (state >>> 17)) >>> 0;
+    state = (state ^ (state << 5)) >>> 0;
+    return state;
   }
 
   /** Genera una rotacion pseudo-aleatoria determinista.
@@ -1235,7 +1238,8 @@ class PolarQuantizedStore {
     // Permutacion determinista
     const perm = new Uint32Array(dim);
     for (let i = 0; i < dim; i++) perm[i] = i;
-    state = seed * 7 + 13;
+    // u32 wrapping para igualar `seed * 7 + 13` de Rust (usa el seed crudo, no el fallback).
+    state = (Math.imul(seed, 7) + 13) >>> 0;
     for (let i = dim - 1; i > 0; i--) {
       state = this._xorshift(state);
       const j = state % (i + 1);
