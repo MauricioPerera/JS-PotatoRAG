@@ -7,7 +7,7 @@ Funciona en **dos modos con modelos distintos y NO intercambiables**:
 - **Modo servidor (Node.js)** — embeddings `embeddinggemma-300m` (768-D) + LLM `gemma-3-270m-it`.
 - **Modo navegador (serverless, PWA)** — embeddings `Xenova/all-MiniLM-L6-v2` (384-D) + LLM `Qwen2.5-0.5B`.
 
-Una base creada en un modo no se consulta desde el otro (distinto modelo y dimensión). Es **air-gapped solo después de la primera descarga** de modelos (desde Hugging Face). La cuantización 3-bit está **inspirada en PolarQuant / Google TurboQuant** (no es un algoritmo original) — detalle y límites medidos en [`docs/QUANTIZATION.md`](docs/QUANTIZATION.md).
+Una base creada en un modo no se consulta desde el otro (distinto modelo y dimensión). **Requiere internet la primera vez** para descargar los modelos (desde Hugging Face); recién *después* de esa descarga puede operar sin conexión. La cuantización 3-bit está **inspirada en PolarQuant / Google TurboQuant** (no es un algoritmo original) — detalle y límites medidos en [`docs/QUANTIZATION.md`](docs/QUANTIZATION.md).
 
 ---
 
