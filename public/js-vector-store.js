@@ -1163,11 +1163,15 @@ class BinaryQuantizedStore {
 // Theta se cuantiza a 3 bits (8 niveles) en [-PI, PI].
 // Resultado: ceil(dim/2) * 3 bits = ceil(dim*3/16) bytes por vector → ~21x compresion.
 //
-// Antes de cuantizar, aplica una rotacion aleatoria determinista (Haar-like)
-// para distribuir la energia uniformemente y mejorar la cuantizacion uniforme.
+// Antes de cuantizar aplica una "rotacion" determinista. OJO: NO es un Hadamard
+// ni una rotacion que mezcle coordenadas — es una PERMUTACION CON SIGNOS
+// (ortogonal: preserva la norma, pero no distribuye energia entre pares). Solo
+// aleatoriza que coordenadas se emparejan y sus signos. Ver docs/QUANTIZATION.md.
 //
-// Similitud: reconstruye vectores unitarios desde angulos cuantizados y calcula
-// coseno directo. Mas preciso que Binary (1-bit) con compresion similar.
+// Similitud: reconstruye vectores unitarios POR PAR desde los angulos cuantizados
+// (descarta la magnitud de cada par) y hace producto punto contra la query. El
+// score resultante NO esta acotado a [0,1]. Mas preciso que Binary (1-bit) con
+// compresion similar; ver docs/QUANTIZATION.md para limites medidos y trade-offs.
 
 class PolarQuantizedStore {
   /**
@@ -1211,21 +1215,25 @@ class PolarQuantizedStore {
   _binFile(col)  { return `${col}.p3.bin`; }
   _jsonFile(col) { return `${col}.p3.json`; }
 
-  /** PRNG determinista (xorshift32) */
+  /** PRNG determinista (xorshift32).
+   *  Replica EXACTAMENTE la semantica u32 de Rust (rust_polar/src/lib.rs):
+   *  shifts logicos sobre un valor sin signo. Usar `>>` (aritmetico) aqui
+   *  hace divergir la rotacion y rompe la compatibilidad binaria con el .wasm. */
   _xorshift(state) {
-    state ^= state << 13;
-    state ^= state >> 17;
-    state ^= state << 5;
-    return state >>> 0;
+    state = (state ^ (state << 13)) >>> 0;
+    state = (state ^ (state >>> 17)) >>> 0;
+    state = (state ^ (state << 5)) >>> 0;
+    return state;
   }
 
-  /** Genera una rotacion pseudo-aleatoria determinista.
-   *  Usa vectores aleatorios + Gram-Schmidt simplificado en pares.
-   *  No es una rotacion ortogonal completa (O(n^2)), pero distribuye energia
-   *  suficientemente para mejorar cuantizacion uniforme. */
+  /** Genera una permutacion-con-signos determinista (sign flip + shuffle).
+   *  ES ortogonal (preserva la norma) pero NO mezcla coordenadas: no decorrela
+   *  ni distribuye energia como lo haria un Hadamard/FWHT real. Su unico efecto
+   *  es aleatorizar que coordenadas se emparejan y sus signos. Para embeddings
+   *  ya bien distribuidos (p.ej. embeddinggemma, PR ~200/768) alcanza; para
+   *  embeddings con energia concentrada queda corta. Ver docs/QUANTIZATION.md. */
   _generateRotation(dim, seed) {
-    // Generamos dim vectores de signos aleatorios para fast rotation
-    // (Hadamard-like: multiplicar por signos aleatorios + shuffle)
+    // Signos aleatorios deterministas (xorshift32 sembrado).
     const signs = new Float64Array(dim);
     let state = seed || 42;
     for (let i = 0; i < dim; i++) {
@@ -1235,7 +1243,8 @@ class PolarQuantizedStore {
     // Permutacion determinista
     const perm = new Uint32Array(dim);
     for (let i = 0; i < dim; i++) perm[i] = i;
-    state = seed * 7 + 13;
+    // u32 wrapping para igualar `seed * 7 + 13` de Rust (usa el seed crudo, no el fallback).
+    state = (Math.imul(seed, 7) + 13) >>> 0;
     for (let i = dim - 1; i > 0; i--) {
       state = this._xorshift(state);
       const j = state % (i + 1);
@@ -1345,6 +1354,20 @@ class PolarQuantizedStore {
   _load(col) {
     if (this._collections.has(col)) return this._collections.get(col);
     const manifest = this._adapter.readJson(this._jsonFile(col));
+    // Guard: the polar quantizer is parametrized by (dim, bits, seed). Reading a
+    // collection quantized with different params yields silently-garbage scores.
+    // Fail loudly instead — this matters for the agent/static-consumer path.
+    if (manifest) {
+      const mDim = manifest.dim, mBits = manifest.bits, mSeed = manifest.seed;
+      if ((mDim !== undefined && mDim !== this.dim) ||
+          (mBits !== undefined && mBits !== this.bits) ||
+          (mSeed !== undefined && mSeed !== this.seed)) {
+        throw new Error(
+          `PolarQuantizedStore: collection '${col}' was quantized with dim=${mDim} bits=${mBits} seed=${mSeed}, ` +
+          `but this store uses dim=${this.dim} bits=${this.bits} seed=${this.seed}.`
+        );
+      }
+    }
     const ids   = manifest ? manifest.ids  : [];
     const meta  = manifest ? manifest.meta : [];
     const model = manifest?.model || this.defaultModel || null;
@@ -2420,47 +2443,26 @@ class Reranker {
 // EXPORTS
 // ---------------------------------------------------------------------------
 
-if (typeof module !== 'undefined' && module.exports) {
-  module.exports = {
-    VectorStore,
-    QuantizedStore,
-    BinaryQuantizedStore,
-    PolarQuantizedStore,
-    IVFIndex,
-    BM25Index,
-    SimpleTokenizer,
-    HybridSearch,
-    Reranker,
-    FileStorageAdapter,
-    MemoryStorageAdapter,
-    CloudflareKVAdapter,
-    TopKHeap,
-    // Math utils
-    normalize,
-    cosineSim,
-    euclideanDist,
-    dotProduct,
-    manhattanDist,
-    computeScore,
-    matchFilter,
-  };
-} else {
-  window.VectorStore = VectorStore;
-  window.QuantizedStore = QuantizedStore;
-  window.BinaryQuantizedStore = BinaryQuantizedStore;
-  window.PolarQuantizedStore = PolarQuantizedStore;
-  window.IVFIndex = IVFIndex;
-  window.BM25Index = BM25Index;
-  window.SimpleTokenizer = SimpleTokenizer;
-  window.HybridSearch = HybridSearch;
-  window.Reranker = Reranker;
-  window.MemoryStorageAdapter = MemoryStorageAdapter;
-  window.TopKHeap = TopKHeap;
-  window.normalize = normalize;
-  window.cosineSim = cosineSim;
-  window.euclideanDist = euclideanDist;
-  window.dotProduct = dotProduct;
-  window.manhattanDist = manhattanDist;
-  window.computeScore = computeScore;
-  window.matchFilter = matchFilter;
-}
+module.exports = {
+  VectorStore,
+  QuantizedStore,
+  BinaryQuantizedStore,
+  PolarQuantizedStore,
+  IVFIndex,
+  BM25Index,
+  SimpleTokenizer,
+  HybridSearch,
+  Reranker,
+  FileStorageAdapter,
+  MemoryStorageAdapter,
+  CloudflareKVAdapter,
+  TopKHeap,
+  // Math utils
+  normalize,
+  cosineSim,
+  euclideanDist,
+  dotProduct,
+  manhattanDist,
+  computeScore,
+  matchFilter,
+};
