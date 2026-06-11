@@ -1,20 +1,25 @@
 # JS-PotatoRAG 🥔 - Local AI Vector Console & PWA
 
-**JS-PotatoRAG** es una consola RAG (Retrieval-Augmented Generation) de inteligencia artificial local, rápida, eficiente y ejecutable en un solo proceso. Es una **Aplicación Web Progresiva (PWA)** diseñada para funcionar air-gapped **una vez descargados los modelos** (ver nota sobre air-gapped en la sección de uso).
+**JS-PotatoRAG** es una consola RAG (Retrieval-Augmented Generation) local y privada, construida sobre una base de datos vectorial ultraligera en Rust → **WebAssembly** con cuantización polar de 3 bits (**~21x** de compresión). Combina embeddings locales (**ONNX Runtime**) y un LLM en proceso, o se conecta a **Ollama**/**LM Studio**.
 
-Combina una base de datos vectorial ultraligera escrita en Rust y compilada a **WebAssembly (WASM)**, extracción de embeddings locales en **ONNX Runtime** y un LLM local en proceso (**Gemma 3 270M IT**) o integraciones en caliente con daemons locales como **Ollama** y **LM Studio** (OpenAI compatible).
+Funciona en **dos modos con modelos distintos y NO intercambiables**:
+
+- **Modo servidor (Node.js)** — embeddings `embeddinggemma-300m` (768-D) + LLM `gemma-3-270m-it`.
+- **Modo navegador (serverless, PWA)** — embeddings `Xenova/all-MiniLM-L6-v2` (384-D) + LLM `Qwen2.5-0.5B`.
+
+Una base creada en un modo no se consulta desde el otro (distinto modelo y dimensión). Es **air-gapped solo después de la primera descarga** de modelos (desde Hugging Face). La cuantización 3-bit está **inspirada en PolarQuant / Google TurboQuant** (no es un algoritmo original) — detalle y límites medidos en [`docs/QUANTIZATION.md`](docs/QUANTIZATION.md).
 
 ---
 
 ## 🚀 Características Principales
 
-*   **PWA Instalable e Instantánea**: Convierte la interfaz en una aplicación de escritorio o móvil con precarga estática offline mediante un Service Worker.
-*   **Búsqueda Vectorial WASM (Rust)**: Base de datos vectorial indexada en 3 bits con polarización angular (`PolarQuantizedStore`), ofreciendo un **7.1x de velocidad** comparado con JavaScript puro (escaneando 10,000 vectores en solo **14.9 ms**).
-*   **Ahorro de Memoria de 21.3x**: Compresión vectorial extrema: cada vector de 768-D ocupa 144 bytes (≈137 MB por millón de vectores *solo para los datos cuantizados*; los `ids` y la metadata se guardan aparte en JSON y crecen linealmente). Este número es aritmético sobre `bytes/vector`, no un benchmark de 1M de vectores ejecutado.
-*   **Embeddings ONNX Locales**: Extracción integrada mediante `@huggingface/transformers` con el modelo `embeddinggemma-300m` quantizado en 8 bits (`q8`), procesado en **~158 ms** en CPU.
-*   **Generador LLM In-Process**: Soporta el nuevo modelo **Google Gemma 3 270M (IT - q4)** de 150 MB, ejecutándose de forma local dentro del proceso de Node.js a más de **27 tokens/segundo** (sin necesidad de Ollama o LM Studio activos).
-*   **Soporte Multi-Proveedor**: Panel de ajustes avanzado en la barra lateral para alternar en caliente entre el generador ONNX interno, Ollama y servidores OpenAI compatibles (LM Studio, vLLM, LocalAI).
-*   **Aislamiento y Autoescalado Vectorial**: Escala dinámicamente las dimensiones del vector en la base de datos WASM y aísla los archivos por modelo (`docs_<model>_<dim>.p3.bin`) para evitar colisiones.
+*   **Búsqueda Vectorial WASM (Rust)**: Cuantización polar de 3 bits (`PolarQuantizedStore`), **~7.2x más rápida** que JS puro (10,000 vectores en **~15 ms**, medido). Recall@1 ~99–100% sobre embeddings bien separados; el método es con pérdida — ver [`docs/QUANTIZATION.md`](docs/QUANTIZATION.md).
+*   **Ahorro de Memoria ~21.3x**: 144 bytes por vector de 768-D (≈137 MB por millón *solo de datos cuantizados*; `ids` y metadata van aparte en JSON). Es aritmética sobre `bytes/vector`, no un benchmark de 1M ejecutado.
+*   **Embeddings locales (ONNX)**: servidor → `embeddinggemma-300m` q8 (768-D, **~158 ms/chunk**); navegador → `Xenova/all-MiniLM-L6-v2` (384-D, **~11 ms/chunk**, medido).
+*   **Generación LLM in-process**: servidor → `gemma-3-270m-it` q4, **~27–31 tok/s** en Node, sin Ollama. **Modo navegador**: `Qwen2.5-0.5B` q4 es una descarga de **~786 MB** y corre en **CPU/WASM** (no usa WebGPU) → la **generación in-browser es lenta/impráctica** en máquinas comunes; la *recuperación* en el navegador sí es ágil.
+*   **Soporte Multi-Proveedor**: alterna en caliente entre el generador ONNX interno, Ollama y servidores OpenAI-compatibles (LM Studio, vLLM, LocalAI).
+*   **Memoria para agentes (MCP)**: API `/api/memory/*` con namespaces/tags + un servidor MCP (`memory_write/search/forget/list`). Además, export/import de colecciones y publicación como **índice estático consumible por agentes** vía `llms.txt` + Skills.
+*   **PWA + aislamiento por modelo**: instalable con Service Worker (cachea assets; los modelos se bajan en el primer uso). Aísla los archivos por modelo y dimensión (`docs_<model>_<dim>.p3.bin`) para evitar colisiones.
 
 ---
 
