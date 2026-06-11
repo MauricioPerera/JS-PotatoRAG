@@ -161,6 +161,7 @@ Variables: `MEMORY_API_URL`, `MEMORY_NAMESPACE`, `EMBED_SOURCE` (`ollama`/`local
 *   `rust_polar.wasm`: Binario de WebAssembly compilado a partir del motor Rust.
 *   `public/`: Carpeta que contiene la aplicación PWA (HTML, estilos CSS, manifiesto de instalación y Service Worker).
 *   `rust_polar/`: Código fuente de Rust del motor de búsqueda y cuantización polar de 3 bits.
+*   `docs/QUANTIZATION.md`: Cómo funciona la cuantización polar, sus límites medidos, atribución (PolarQuant/TurboQuant) y cuándo conviene optimizarla.
 *   `benchmark_wasm.cjs`: Script para comparar el rendimiento de búsqueda entre WASM y JavaScript puro.
 *   `benchmark_onnx.js`: Script para medir los tiempos de inferencia del extractor de embeddings local.
 
