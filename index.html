@@ -1,0 +1,526 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>JS-PotatoRAG - 21x Quantized Local AI</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600&family=Outfit:wght@400;500;600;700&family=Fira+Code:wght@400;500&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="style.css">
+  
+  <!-- PWA Manifest & Meta Tags -->
+  <link rel="manifest" href="/manifest.json">
+  <meta name="theme-color" content="#8b5cf6">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <link rel="apple-touch-icon" href="/icon-512.png">
+</head>
+<body>
+  <div class="app-container">
+    <!-- Sidebar -->
+    <aside class="sidebar">
+      <div class="brand">
+        <span class="logo">🥔</span>
+        <div>
+          <h1>JS-PotatoRAG</h1>
+          <p>Local AI on Ultra-Low Memory</p>
+        </div>
+      </div>
+
+      <div class="divider"></div>
+
+      <!-- Ingestion Section -->
+      <section class="ingest-section">
+        <h2>📂 Ingestion Hub</h2>
+        
+        <div class="upload-box" id="drop-zone">
+          <input type="file" id="file-input" accept=".txt" style="display: none;">
+          <div class="upload-icon">📄</div>
+          <p>Drag & drop a `.txt` file or <span class="browse-link" id="browse-btn">browse</span></p>
+        </div>
+
+        <div class="textarea-container">
+          <label for="text-input">Or paste raw text here:</label>
+          <textarea id="text-input" placeholder="Type or paste document text..."></textarea>
+        </div>
+
+        <button id="ingest-btn" class="btn btn-primary">
+          <span class="btn-text">🚀 Ingest Document</span>
+          <span class="loader" id="ingest-loader" style="display: none;"></span>
+        </button>
+
+        <div id="ingest-status" class="status-banner" style="display: none;"></div>
+      </section>
+
+      <div class="divider"></div>
+
+      <!-- Configuration Section -->
+      <section class="settings-section">
+        <h2>⚙️ Configuration</h2>
+        
+        <div class="setting-group">
+          <label for="setting-llm-provider">LLM Provider</label>
+          <select id="setting-llm-provider">
+            <option value="ollama">Ollama Native API</option>
+            <option value="openai">LM Studio / OpenAI compatible</option>
+            <option value="local-onnx">Local ONNX (Gemma-3 270M)</option>
+          </select>
+        </div>
+        
+        <div class="setting-group">
+          <label for="setting-llm-url">LLM API URL</label>
+          <input type="text" id="setting-llm-url" placeholder="Default: http://localhost:11434">
+        </div>
+
+        <div class="setting-group">
+          <label for="setting-llm-model">LLM Model (Chat)</label>
+          <input type="text" id="setting-llm-model" placeholder="Default: qwen2.5:1.5b">
+        </div>
+
+        <div class="setting-group">
+          <label for="setting-embed-source">Embedding Source</label>
+          <select id="setting-embed-source">
+            <option value="local">Local ONNX (embeddinggemma)</option>
+            <option value="ollama">Ollama API (Custom Model)</option>
+            <option value="openai">LM Studio / OpenAI API</option>
+          </select>
+        </div>
+
+        <div id="remote-embed-fields" style="display: none;">
+          <div class="setting-group">
+            <label for="setting-embed-model">Embedding Model</label>
+            <input type="text" id="setting-embed-model" placeholder="e.g. nomic-embed-text">
+          </div>
+          <div class="setting-group">
+            <label for="setting-embed-dim">Embedding Dimension</label>
+            <input type="number" id="setting-embed-dim" placeholder="e.g. 768" value="768">
+          </div>
+        </div>
+      </section>
+
+      <div class="spacer"></div>
+
+      <!-- Stats Footer -->
+      <div class="stats-panel" id="stats-panel">
+        <h3>📊 Database Status</h3>
+        <div class="stat-row">
+          <span>Format:</span>
+          <span class="stat-val" id="stat-format">Polar 3-bit</span>
+        </div>
+        <div class="stat-row">
+          <span>Dimension:</span>
+          <span class="stat-val" id="stat-dim">768</span>
+        </div>
+        <div class="stat-row">
+          <span>Total Chunks:</span>
+          <span class="stat-val" id="stat-chunks">0</span>
+        </div>
+      </div>
+    </aside>
+
+    <!-- Main Content Chat -->
+    <main class="chat-container">
+      <header class="chat-header">
+        <div class="header-info">
+          <h2>RAG Chat Console</h2>
+          <span class="badge badge-success">Air-Gapped & Active</span>
+          <button id="btn-install" class="btn-install" style="display: none;">
+            📥 Install App
+          </button>
+        </div>
+        
+        <!-- Metrics Display -->
+        <div class="metrics-card" id="metrics-card">
+          <div class="metric">
+            <span class="metric-label">VDB Scan Latency:</span>
+            <span class="metric-value" id="latency-val">0.000 ms</span>
+          </div>
+        </div>
+      </header>
+
+      <!-- Chat History -->
+      <div class="chat-messages" id="chat-messages">
+        <div class="message system-message">
+          <div class="message-content">
+            Hello! I am <strong>JS-PotatoRAG</strong>. I can run embedding extraction and vector database scans 100% locally in your process.
+            Configure your local server (Ollama or LM Studio) in the sidebar, upload/paste documents, and start chatting!
+          </div>
+        </div>
+      </div>
+
+      <!-- Context Expander Pane (Retrieved Chunks) -->
+      <div class="context-pane" id="context-pane" style="display: none;">
+        <div class="context-header" id="context-toggle">
+          <span>🔍 View Retrieved Context Chunks (Top 3)</span>
+          <span class="expander-icon" id="expander-icon">▼</span>
+        </div>
+        <div class="context-body" id="context-body"></div>
+      </div>
+
+      <!-- Chat Input Area -->
+      <footer class="chat-footer">
+        <form id="chat-form" class="chat-input-form">
+          <input type="text" id="chat-input" placeholder="Ask a question about your documents..." autocomplete="off">
+          <button type="submit" class="btn-send">
+            <svg viewBox="0 0 24 24" width="24" height="24">
+              <path fill="currentColor" d="M2.01 21L23 12 2.01 3 2 10l15 2-15 2z"></path>
+            </svg>
+          </button>
+        </form>
+      </footer>
+    </main>
+  </div>
+
+  <script>
+    const dropZone = document.getElementById('drop-zone');
+    const fileInput = document.getElementById('file-input');
+    const browseBtn = document.getElementById('browse-btn');
+    const textInput = document.getElementById('text-input');
+    const ingestBtn = document.getElementById('ingest-btn');
+    const ingestLoader = document.getElementById('ingest-loader');
+    const ingestStatus = document.getElementById('ingest-status');
+    const chatForm = document.getElementById('chat-form');
+    const chatInput = document.getElementById('chat-input');
+    const chatMessages = document.getElementById('chat-messages');
+    const contextPane = document.getElementById('context-pane');
+    const contextBody = document.getElementById('context-body');
+    const contextToggle = document.getElementById('context-toggle');
+    const expanderIcon = document.getElementById('expander-icon');
+    const latencyVal = document.getElementById('latency-val');
+    const statChunks = document.getElementById('stat-chunks');
+    const statDim = document.getElementById('stat-dim');
+    const statFormat = document.getElementById('stat-format');
+
+    // UI Configuration Elements
+    const llmProvider = document.getElementById('setting-llm-provider');
+    const llmUrl = document.getElementById('setting-llm-url');
+    const llmModel = document.getElementById('setting-llm-model');
+    const embedSource = document.getElementById('setting-embed-source');
+    const embedModel = document.getElementById('setting-embed-model');
+    const embedDim = document.getElementById('setting-embed-dim');
+    const remoteEmbedFields = document.getElementById('remote-embed-fields');
+    const btnInstall = document.getElementById('btn-install');
+
+    let isIngesting = false;
+    let selectedFile = null;
+    let deferredPrompt;
+
+    // Toggle expander logic
+    contextToggle.addEventListener('click', () => {
+      const isVisible = contextBody.style.display !== 'none';
+      contextBody.style.display = isVisible ? 'none' : 'block';
+      expanderIcon.style.transform = isVisible ? 'rotate(0deg)' : 'rotate(180deg)';
+    });
+
+    // File selection triggers
+    browseBtn.addEventListener('click', () => fileInput.click());
+    fileInput.addEventListener('change', (e) => {
+      if (e.target.files.length > 0) {
+        selectedFile = e.target.files[0];
+        dropZone.querySelector('p').innerHTML = `Selected: <strong>${selectedFile.name}</strong>`;
+      }
+    });
+
+    // Drag & drop handlers
+    dropZone.addEventListener('dragover', (e) => {
+      e.preventDefault();
+      dropZone.classList.add('dragover');
+    });
+    dropZone.addEventListener('dragleave', () => dropZone.classList.remove('dragover'));
+    dropZone.addEventListener('drop', (e) => {
+      e.preventDefault();
+      dropZone.classList.remove('dragover');
+      if (e.dataTransfer.files.length > 0) {
+        selectedFile = e.dataTransfer.files[0];
+        dropZone.querySelector('p').innerHTML = `Selected: <strong>${selectedFile.name}</strong>`;
+      }
+    });
+
+    // Settings logic (localStorage)
+    function getActiveSettings() {
+      const provider = llmProvider.value;
+      const defaultUrl = provider === 'ollama' ? 'http://localhost:11434' : 'http://localhost:1234/v1';
+      const defaultLlmModel = provider === 'ollama' ? 'qwen2.5:1.5b' : 'lmstudio-community/Meta-Llama-3-8B-Instruct-GGUF';
+      
+      const source = embedSource.value;
+      const defaultEmbedModel = source === 'local' ? 'embeddinggemma' : (embedModel.value.trim() || 'nomic-embed-text');
+      const defaultEmbedDim = source === 'local' ? 768 : (parseInt(embedDim.value) || 768);
+
+      return {
+        llmProvider: provider,
+        llmUrl: llmUrl.value.trim() || defaultUrl,
+        llmModel: llmModel.value.trim() || defaultLlmModel,
+        embedSource: source,
+        embedModel: defaultEmbedModel,
+        embedDimension: defaultEmbedDim
+      };
+    }
+
+    function saveSettings() {
+      const config = getActiveSettings();
+      localStorage.setItem('potatorag_config', JSON.stringify({
+        llmProvider: llmProvider.value,
+        llmUrl: llmUrl.value,
+        llmModel: llmModel.value,
+        embedSource: embedSource.value,
+        embedModel: embedModel.value,
+        embedDimension: embedDim.value
+      }));
+      updateStats();
+    }
+
+    function loadSettings() {
+      const saved = localStorage.getItem('potatorag_config');
+      if (saved) {
+        try {
+          const config = JSON.parse(saved);
+          llmProvider.value = config.llmProvider || 'ollama';
+          llmUrl.value = config.llmUrl || '';
+          llmModel.value = config.llmModel || '';
+          embedSource.value = config.embedSource || 'local';
+          embedModel.value = config.embedModel || '';
+          embedDim.value = config.embedDimension || '768';
+        } catch (e) {
+          console.error(e);
+        }
+      }
+      toggleEmbedFields();
+      toggleLlmFields();
+    }
+
+    function toggleEmbedFields() {
+      if (embedSource.value === 'local') {
+        remoteEmbedFields.style.display = 'none';
+      } else {
+        remoteEmbedFields.style.display = 'block';
+      }
+    }
+
+    function toggleLlmFields() {
+      const isLocal = llmProvider.value === 'local-onnx';
+      llmUrl.closest('.setting-group').style.display = isLocal ? 'none' : 'flex';
+      llmModel.closest('.setting-group').style.display = isLocal ? 'none' : 'flex';
+    }
+
+    // Set change triggers
+    [llmProvider, llmUrl, llmModel, embedModel, embedDim].forEach(el => {
+      el.addEventListener('input', saveSettings);
+    });
+    embedSource.addEventListener('change', () => {
+      toggleEmbedFields();
+      saveSettings();
+    });
+    llmProvider.addEventListener('change', () => {
+      toggleLlmFields();
+      saveSettings();
+    });
+
+    // Load DB Stats
+    async function updateStats() {
+      try {
+        const settings = getActiveSettings();
+        const res = await fetch('/api/stats', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ settings })
+        });
+        const stats = await res.json();
+        statChunks.textContent = stats.vectorCount;
+        statDim.textContent = stats.dimension;
+        statFormat.textContent = stats.compressionFormat.split(' ')[0] + ' ' + stats.compressionFormat.split(' ')[1];
+      } catch (err) {
+        console.error('Failed to load stats:', err);
+      }
+    }
+
+    // Ingest handler
+    ingestBtn.addEventListener('click', async () => {
+      if (isIngesting) return;
+      
+      let text = textInput.value.trim();
+      
+      if (selectedFile) {
+        try {
+          text = await selectedFile.text();
+        } catch (err) {
+          showStatus('Error reading file: ' + err.message, 'error');
+          return;
+        }
+      }
+
+      if (!text) {
+        showStatus('Please paste text or upload a file.', 'error');
+        return;
+      }
+
+      setIngesting(true);
+      showStatus('Embedding and quantizing chunks...', 'info');
+
+      try {
+        const response = await fetch('/api/ingest', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ text, settings: getActiveSettings() })
+        });
+        const data = await response.json();
+        
+        if (data.error) throw new Error(data.error);
+
+        showStatus(`Indexed ${data.count} chunks! Total: ${data.total}`, 'success');
+        textInput.value = '';
+        selectedFile = null;
+        fileInput.value = '';
+        dropZone.querySelector('p').innerHTML = 'Drag & drop a `.txt` file or <span class="browse-link" id="browse-btn">browse</span>';
+        updateStats();
+      } catch (err) {
+        showStatus('Ingestion failed: ' + err.message, 'error');
+      } finally {
+        setIngesting(false);
+      }
+    });
+
+    function setIngesting(val) {
+      isIngesting = val;
+      ingestLoader.style.display = val ? 'inline-block' : 'none';
+      ingestBtn.disabled = val;
+    }
+
+    function showStatus(msg, type) {
+      ingestStatus.style.display = 'block';
+      ingestStatus.className = `status-banner status-${type}`;
+      ingestStatus.textContent = msg;
+    }
+
+    // Chat form submit
+    chatForm.addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const query = chatInput.value.trim();
+      if (!query) return;
+
+      chatInput.value = '';
+      appendMessage('user', query);
+
+      // Scroll to bottom
+      chatMessages.scrollTop = chatMessages.scrollHeight;
+
+      try {
+        const settings = getActiveSettings();
+        
+        // Step 1: Query VDB for matching chunks
+        const queryRes = await fetch('/api/query', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ query, settings })
+        });
+        const queryData = await queryRes.json();
+        
+        if (queryData.error) throw new Error(queryData.error);
+        
+        // Show scan latency
+        latencyVal.textContent = `${queryData.searchTimeMs.toFixed(3)} ms`;
+
+        // Render matching chunks
+        contextBody.innerHTML = '';
+        if (queryData.results && queryData.results.length > 0) {
+          contextPane.style.display = 'block';
+          contextBody.style.display = 'block';
+          expanderIcon.style.transform = 'rotate(180deg)';
+          
+          queryData.results.forEach((match, idx) => {
+            const chunkDiv = document.createElement('div');
+            chunkDiv.className = 'context-chunk';
+            chunkDiv.innerHTML = `
+              <div class="chunk-meta">Chunk ${idx + 1} &middot; Similarity: <strong>${(match.score).toFixed(4)}</strong></div>
+              <div class="chunk-text">${match.metadata.text}</div>
+            `;
+            contextBody.appendChild(chunkDiv);
+          });
+        } else {
+          contextPane.style.display = 'none';
+        }
+
+        // Assemble context string
+        const contextText = queryData.results ? queryData.results.map(r => r.metadata.text).join('\n') : '';
+
+        // Step 2: Stream Chat response
+        const assistantMsgDiv = appendMessage('assistant', '...');
+        const responsePlaceholder = assistantMsgDiv.querySelector('.message-content');
+        
+        const chatRes = await fetch('/api/chat', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ query, context: contextText, settings })
+        });
+
+        if (!chatRes.ok) {
+          const errorMsg = await chatRes.text();
+          throw new Error(errorMsg || 'Failed connection to LLM');
+        }
+
+        const reader = chatRes.body.getReader();
+        const decoder = new TextDecoder();
+        let fullResponse = '';
+
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          const chunkStr = decoder.decode(value);
+          fullResponse += chunkStr;
+          responsePlaceholder.textContent = fullResponse;
+          chatMessages.scrollTop = chatMessages.scrollHeight;
+        }
+
+      } catch (err) {
+        appendMessage('system', 'Error answering query: ' + err.message);
+      }
+    });
+
+    function appendMessage(role, text) {
+      const msgDiv = document.createElement('div');
+      msgDiv.className = `message ${role}-message`;
+      msgDiv.innerHTML = `
+        <div class="message-sender">${role === 'user' ? 'You' : role === 'assistant' ? 'JS-PotatoRAG' : 'System'}</div>
+        <div class="message-content">${text}</div>
+      `;
+      chatMessages.appendChild(msgDiv);
+      chatMessages.scrollTop = chatMessages.scrollHeight;
+      return msgDiv;
+    }
+
+    // PWA Install Prompt Handler
+    window.addEventListener('beforeinstallprompt', (e) => {
+      e.preventDefault();
+      deferredPrompt = e;
+      btnInstall.style.display = 'inline-flex';
+    });
+
+    btnInstall.addEventListener('click', async () => {
+      if (!deferredPrompt) return;
+      deferredPrompt.prompt();
+      const { outcome } = await deferredPrompt.userChoice;
+      console.log(`User response to install: ${outcome}`);
+      deferredPrompt = null;
+      btnInstall.style.display = 'none';
+    });
+
+    window.addEventListener('appinstalled', () => {
+      console.log('App installed successfully');
+      btnInstall.style.display = 'none';
+    });
+
+    // Initial load
+    loadSettings();
+    updateStats();
+
+    // Register Service Worker
+    if ('serviceWorker' in navigator) {
+      window.addEventListener('load', () => {
+        navigator.serviceWorker.register('/sw.js')
+          .then(reg => console.log('Service Worker registered successfully!', reg))
+          .catch(err => console.error('Service Worker registration failed:', err));
+      });
+    }
+  </script>
+</body>
+</html>
