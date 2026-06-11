@@ -21,7 +21,8 @@ fn generate_rotation(dim: usize, seed: u32) -> Rotation {
         signs[i] = if (state & 1) != 0 { 1.0 } else { -1.0 };
     }
     let mut perm = (0..dim).collect::<Vec<usize>>();
-    state = seed * 7 + 13;
+    // wrapping to match the wasm (release) build and avoid debug-build overflow panics.
+    state = seed.wrapping_mul(7).wrapping_add(13);
     for i in (1..dim).rev() {
         state = xorshift(state);
         let j = (state as usize) % (i + 1);

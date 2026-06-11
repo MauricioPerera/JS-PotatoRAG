@@ -188,6 +188,29 @@ h1, h2, h3 {
   cursor: not-allowed;
 }
 
+.btn-secondary {
+  background-color: rgba(255, 255, 255, 0.06);
+  color: var(--text, #e6e6e6);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  font-size: 13px;
+  padding: 9px;
+}
+
+.btn-secondary:hover {
+  background-color: rgba(139, 92, 246, 0.15);
+  border-color: var(--primary, #8b5cf6);
+}
+
+.db-tools {
+  display: flex;
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.db-tools .btn-secondary {
+  flex: 1;
+}
+
 /* Spinner Loader */
 .loader {
   width: 14px;
