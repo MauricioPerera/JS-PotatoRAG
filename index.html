@@ -172,6 +172,16 @@
     </main>
   </div>
 
+  <script src="js-vector-store.js"></script>
+  <script src="wasm-polar-store-browser.js"></script>
+  <script src="wasm-vector-store-browser.js"></script>
+  <script type="module">
+    import { pipeline, env, TextStreamer } from 'https://cdn.jsdelivr.net/npm/@huggingface/transformers@3.0.0-alpha.19/dist/transformers.min.js';
+    env.allowLocalModels = false;
+    env.backends.onnx.wasm.proxy = false; // Disable proxy to fix Module.MountedFiles error for external weights
+    window.Transformers = { pipeline, env, TextStreamer };
+  </script>
+
   <script>
     const dropZone = document.getElementById('drop-zone');
     const fileInput = document.getElementById('file-input');
@@ -205,6 +215,12 @@
     let isIngesting = false;
     let selectedFile = null;
     let deferredPrompt;
+
+    let isServerlessMode = false;
+    let browserAdapter = null;
+    let browserStore = null;
+    let browserExtractor = null;
+    let browserGenerator = null;
 
     // Toggle expander logic
     contextToggle.addEventListener('click', () => {
@@ -244,8 +260,14 @@
       const defaultLlmModel = provider === 'ollama' ? 'qwen2.5:1.5b' : 'lmstudio-community/Meta-Llama-3-8B-Instruct-GGUF';
       
       const source = embedSource.value;
-      const defaultEmbedModel = source === 'local' ? 'embeddinggemma' : (embedModel.value.trim() || 'nomic-embed-text');
-      const defaultEmbedDim = source === 'local' ? 768 : (parseInt(embedDim.value) || 768);
+      let defaultEmbedModel = source === 'local' ? 'embeddinggemma' : (embedModel.value.trim() || 'nomic-embed-text');
+      let defaultEmbedDim = source === 'local' ? 768 : (parseInt(embedDim.value) || 768);
+
+      // Force Xenova/all-MiniLM-L6-v2 in browser mode if embedding source is local
+      if (isServerlessMode && source === 'local') {
+        defaultEmbedModel = 'Xenova/all-MiniLM-L6-v2';
+        defaultEmbedDim = 384;
+      }
 
       return {
         llmProvider: provider,
@@ -316,8 +338,192 @@
       saveSettings();
     });
 
+    // Browser-side progress bar and status helpers
+    function showModelProgress(message, percent = null) {
+      let progressDiv = document.getElementById('model-download-progress');
+      if (!progressDiv) {
+        progressDiv = document.createElement('div');
+        progressDiv.id = 'model-download-progress';
+        progressDiv.className = 'download-progress-banner';
+        document.querySelector('.chat-container').insertBefore(progressDiv, document.querySelector('.chat-messages'));
+      }
+      progressDiv.style.display = 'flex';
+      if (percent !== null) {
+        progressDiv.innerHTML = `<span>⏳ ${message}</span> <div class="progress-bar-bg"><div class="progress-bar-fill" style="width: ${percent}%"></div></div> <span class="percent-label">${percent.toFixed(0)}%</span>`;
+      } else {
+        progressDiv.innerHTML = `<span>⏳ ${message}</span>`;
+      }
+    }
+
+    function hideModelProgress() {
+      const progressDiv = document.getElementById('model-download-progress');
+      if (progressDiv) {
+        progressDiv.style.display = 'none';
+      }
+    }
+
+    function getCollectionName(modelName, dimension) {
+      const cleanModel = (modelName || 'local').replace(/[^a-zA-Z0-9]/g, '_');
+      return `docs_${cleanModel}_${dimension}`;
+    }
+
+    function chunkText(text, chunkSize = 200, overlap = 50) {
+      const words = text.split(/\s+/);
+      const chunks = [];
+      if (words.length === 0 || words[0] === "") return chunks;
+      
+      const step = Math.max(1, chunkSize - overlap);
+      for (let i = 0; i < words.length; i += step) {
+        const chunk = words.slice(i, i + chunkSize).join(" ");
+        chunks.push(chunk);
+        if (i + chunkSize >= words.length) break;
+      }
+      return chunks;
+    }
+
+    async function detectBackend() {
+      try {
+        const settings = getActiveSettings();
+        const res = await fetch('/api/stats', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ settings })
+        });
+        if (res.ok) {
+          const stats = await res.json();
+          isServerlessMode = false;
+          const badge = document.querySelector('.badge');
+          badge.textContent = 'Air-Gapped & Active';
+          badge.className = 'badge badge-success';
+          statChunks.textContent = stats.vectorCount;
+          statDim.textContent = stats.dimension;
+          statFormat.textContent = stats.compressionFormat;
+        } else {
+          throw new Error('Backend error');
+        }
+      } catch (err) {
+        console.warn('Backend not detected, falling back to Serverless Browser Mode:', err);
+        isServerlessMode = true;
+        const badge = document.querySelector('.badge');
+        badge.textContent = 'Serverless Browser Mode';
+        badge.className = 'badge badge-info';
+        
+        await initBrowserDB();
+      }
+    }
+
+    async function initBrowserDB() {
+      try {
+        showModelProgress('Initializing WASM Vector database...', null);
+        await WasmPolarStore.init('rust_polar.wasm');
+        
+        browserAdapter = new BrowserIndexedDbAdapter();
+        await browserAdapter.init();
+        
+        const settings = getActiveSettings();
+        let dim = 384;
+        if (settings.embedSource !== 'local' && settings.embedDimension) {
+          dim = parseInt(settings.embedDimension) || 384;
+        }
+        
+        browserStore = new BrowserWasmVectorStore(browserAdapter, dim, {
+          bits: 3,
+          seed: 42,
+          model: settings.embedModel || 'Xenova/all-MiniLM-L6-v2'
+        });
+        
+        hideModelProgress();
+        updateStats();
+      } catch (err) {
+        console.error('Failed to initialize browser DB:', err);
+        showStatus('WASM/IndexedDB initialization failed: ' + err.message, 'error');
+      }
+    }
+
+    async function getBrowserExtractor() {
+      if (!browserExtractor) {
+        if (!window.Transformers) throw new Error('Transformers.js CDN did not load.');
+        browserExtractor = await window.Transformers.pipeline('feature-extraction', 'Xenova/all-MiniLM-L6-v2', {
+          progress_callback: (data) => {
+            if (data.status === 'progress') {
+              showModelProgress(`Downloading embedding model (${data.file})`, data.progress);
+            } else if (data.status === 'ready') {
+              hideModelProgress();
+            }
+          }
+        });
+      }
+      return browserExtractor;
+    }
+
+    async function getBrowserEmbedding(text, settings, extractor) {
+      if (settings.embedSource === 'local') {
+        const output = await extractor(text, { pooling: 'mean', normalize: true });
+        return Array.from(output.data);
+      } else {
+        const url = settings.llmUrl;
+        let endpoint = '';
+        let body = {};
+        
+        if (settings.embedSource === 'ollama') {
+          endpoint = `${url}/api/embeddings`;
+          body.model = settings.embedModel;
+          body.prompt = text;
+        } else {
+          endpoint = `${url}/embeddings`;
+          body.model = settings.embedModel;
+          body.input = text;
+        }
+        
+        const res = await fetch(endpoint, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(body)
+        });
+        if (!res.ok) {
+          throw new Error(`External embedding API error: ${res.statusText}`);
+        }
+        const data = await res.json();
+        if (settings.embedSource === 'ollama') {
+          return data.embedding;
+        } else {
+          return data.data[0].embedding;
+        }
+      }
+    }
+
+    async function getBrowserGenerator() {
+      if (!browserGenerator) {
+        if (!window.Transformers) throw new Error('Transformers.js CDN did not load.');
+        browserGenerator = await window.Transformers.pipeline('text-generation', 'onnx-community/Qwen2.5-0.5B-Instruct-ONNX', {
+          dtype: 'q4',
+          progress_callback: (data) => {
+            if (data.status === 'progress') {
+              showModelProgress(`Downloading Qwen 2.5 0.5B Chat model (${data.file})`, data.progress);
+            } else if (data.status === 'ready') {
+              hideModelProgress();
+            }
+          }
+        });
+      }
+      return browserGenerator;
+    }
+
     // Load DB Stats
     async function updateStats() {
+      if (isServerlessMode) {
+        if (!browserStore) return;
+        const settings = getActiveSettings();
+        let dim = 384;
+        if (settings.embedSource !== 'local' && settings.embedDimension) {
+          dim = parseInt(settings.embedDimension) || 384;
+        }
+        const collection = getCollectionName(settings.embedModel || 'Xenova/all-MiniLM-L6-v2', dim);
+        statChunks.textContent = browserStore.count(collection);
+        statDim.textContent = dim;
+        statFormat.textContent = 'Polar 3-bit (Browser)';
+        return;
+      }
       try {
         const settings = getActiveSettings();
         const res = await fetch('/api/stats', {
@@ -328,7 +534,7 @@
         const stats = await res.json();
         statChunks.textContent = stats.vectorCount;
         statDim.textContent = stats.dimension;
-        statFormat.textContent = stats.compressionFormat.split(' ')[0] + ' ' + stats.compressionFormat.split(' ')[1];
+        statFormat.textContent = stats.compressionFormat;
       } catch (err) {
         console.error('Failed to load stats:', err);
       }
@@ -355,19 +561,52 @@
       }
 
       setIngesting(true);
-      showStatus('Embedding and quantizing chunks...', 'info');
 
       try {
-        const response = await fetch('/api/ingest', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ text, settings: getActiveSettings() })
-        });
-        const data = await response.json();
-        
-        if (data.error) throw new Error(data.error);
+        const settings = getActiveSettings();
 
-        showStatus(`Indexed ${data.count} chunks! Total: ${data.total}`, 'success');
+        if (isServerlessMode) {
+          if (!browserStore) {
+            await initBrowserDB();
+          }
+          
+          showModelProgress('Loading embedding model...', 0);
+          const extractor = await getBrowserExtractor();
+          hideModelProgress();
+          
+          showStatus('Chunking document...', 'info');
+          const chunks = chunkText(text, 200, 50);
+          if (chunks.length === 0) {
+            throw new Error('No chunks generated from text.');
+          }
+
+          const collection = getCollectionName(settings.embedModel || 'Xenova/all-MiniLM-L6-v2', settings.embedDimension);
+          
+          for (let i = 0; i < chunks.length; i++) {
+            showStatus(`Generating embedding for chunk ${i + 1}/${chunks.length}...`, 'info');
+            const emb = await getBrowserEmbedding(chunks[i], settings, extractor);
+            const chunkId = `doc_${Date.now()}_${i}`;
+            browserStore.set(collection, chunkId, emb, { text: chunks[i], source: selectedFile ? selectedFile.name : 'pasted_text' });
+          }
+          
+          showStatus('Saving embeddings to IndexedDB...', 'info');
+          browserStore.flush();
+          
+          const count = chunks.length;
+          const total = browserStore.count(collection);
+          showStatus(`Indexed ${count} chunks! Total: ${total}`, 'success');
+        } else {
+          showStatus('Embedding and quantizing chunks...', 'info');
+          const response = await fetch('/api/ingest', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ text, settings })
+          });
+          const data = await response.json();
+          if (data.error) throw new Error(data.error);
+          showStatus(`Indexed ${data.count} chunks! Total: ${data.total}`, 'success');
+        }
+
         textInput.value = '';
         selectedFile = null;
         fileInput.value = '';
@@ -406,28 +645,51 @@
 
       try {
         const settings = getActiveSettings();
-        
-        // Step 1: Query VDB for matching chunks
-        const queryRes = await fetch('/api/query', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ query, settings })
-        });
-        const queryData = await queryRes.json();
-        
-        if (queryData.error) throw new Error(queryData.error);
+        let queryResults = [];
+        let searchTimeMs = 0;
+
+        if (isServerlessMode) {
+          if (!browserStore) {
+            await initBrowserDB();
+          }
+          const collection = getCollectionName(settings.embedModel || 'Xenova/all-MiniLM-L6-v2', settings.embedDimension);
+          
+          showModelProgress('Loading embedding model for query...', 0);
+          const extractor = await getBrowserExtractor();
+          hideModelProgress();
+
+          showStatus('Generating query embedding...', 'info');
+          const queryEmb = await getBrowserEmbedding(query, settings, extractor);
+          
+          const start = performance.now();
+          queryResults = browserStore.search(collection, queryEmb, 3);
+          searchTimeMs = performance.now() - start;
+          hideModelProgress();
+        } else {
+          // Step 1: Query VDB for matching chunks
+          const queryRes = await fetch('/api/query', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ query, settings })
+          });
+          const queryData = await queryRes.json();
+          
+          if (queryData.error) throw new Error(queryData.error);
+          queryResults = queryData.results;
+          searchTimeMs = queryData.searchTimeMs;
+        }
         
         // Show scan latency
-        latencyVal.textContent = `${queryData.searchTimeMs.toFixed(3)} ms`;
+        latencyVal.textContent = `${searchTimeMs.toFixed(3)} ms`;
 
         // Render matching chunks
         contextBody.innerHTML = '';
-        if (queryData.results && queryData.results.length > 0) {
+        if (queryResults && queryResults.length > 0) {
           contextPane.style.display = 'block';
           contextBody.style.display = 'block';
           expanderIcon.style.transform = 'rotate(180deg)';
           
-          queryData.results.forEach((match, idx) => {
+          queryResults.forEach((match, idx) => {
             const chunkDiv = document.createElement('div');
             chunkDiv.className = 'context-chunk';
             chunkDiv.innerHTML = `
@@ -441,36 +703,149 @@
         }
 
         // Assemble context string
-        const contextText = queryData.results ? queryData.results.map(r => r.metadata.text).join('\n') : '';
+        const contextText = queryResults ? queryResults.map(r => r.metadata.text).join('\n') : '';
 
         // Step 2: Stream Chat response
         const assistantMsgDiv = appendMessage('assistant', '...');
         const responsePlaceholder = assistantMsgDiv.querySelector('.message-content');
         
-        const chatRes = await fetch('/api/chat', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ query, context: contextText, settings })
-        });
+        if (isServerlessMode && settings.llmProvider === 'local-onnx') {
+          // Local browser LLM chat generation (Qwen 2.5)
+          showModelProgress('Loading local chat model...', 0);
+          const gen = await getBrowserGenerator();
+          hideModelProgress();
+          
+          const messages = [
+            { role: 'system', content: `You are a helpful assistant. Use the following context to answer the user's question. If the context is empty or doesn't contain the answer, use your general knowledge, but prioritize the context if it's relevant.\n\nContext:\n${contextText}` },
+            { role: 'user', content: query }
+          ];
 
-        if (!chatRes.ok) {
-          const errorMsg = await chatRes.text();
-          throw new Error(errorMsg || 'Failed connection to LLM');
+          let fullResponse = '';
+          
+          class BrowserResponseStreamer extends window.Transformers.TextStreamer {
+            on_finalized_text(text, stream_end) {
+              if (text && !text.startsWith('<|im_start|>') && !text.startsWith('<|im_end|>')) {
+                fullResponse += text;
+                responsePlaceholder.textContent = fullResponse;
+                chatMessages.scrollTop = chatMessages.scrollHeight;
+              }
+            }
+          }
+
+          const streamer = new BrowserResponseStreamer(gen.tokenizer, {
+            skip_prompt: true,
+            decode_kwargs: { skip_special_tokens: true }
+          });
+
+          // Text generation pipeline
+          const output = await gen(messages, {
+            max_new_tokens: 512,
+            streamer: streamer
+          });
+          
+          if (!fullResponse && output && output[0] && output[0].generated_text) {
+            // Fallback if streamer didn't output text
+            let rawText = output[0].generated_text;
+            if (Array.isArray(rawText)) {
+              rawText = rawText[0].generated_text || '';
+            }
+            responsePlaceholder.textContent = rawText;
+          }
+        } else {
+          // Server-side LLM or serverless direct connection to Ollama/LM Studio API
+          let chatUrl = '/api/chat';
+          let chatBody = { query, context: contextText, settings };
+          
+          if (isServerlessMode) {
+            const provider = settings.llmProvider;
+            const url = settings.llmUrl;
+            
+            if (provider === 'ollama') {
+              chatUrl = `${url}/api/chat`;
+              chatBody = {
+                model: settings.llmModel,
+                messages: [
+                  { role: 'system', content: `Use the following context to answer the user's question:\n${contextText}` },
+                  { role: 'user', content: query }
+                ],
+                stream: true
+              };
+            } else {
+              // OpenAI compatible (LM Studio / Local Server)
+              const baseChatUrl = url.endsWith('/') ? url : (url + '/');
+              chatUrl = url.includes('/v1') ? `${baseChatUrl}chat/completions` : `${baseChatUrl}v1/chat/completions`;
+              chatBody = {
+                model: settings.llmModel,
+                messages: [
+                  { role: 'system', content: `Use the following context to answer the user's question:\n${contextText}` },
+                  { role: 'user', content: query }
+                ],
+                stream: true
+              };
+            }
+          }
+
+          const chatRes = await fetch(chatUrl, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(chatBody)
+          });
+
+          if (!chatRes.ok) {
+            const errorMsg = await chatRes.text();
+            throw new Error(errorMsg || 'Failed connection to LLM');
+          }
+
+          const reader = chatRes.body.getReader();
+          const decoder = new TextDecoder();
+          let fullResponse = '';
+
+          while (true) {
+            const { done, value } = await reader.read();
+            if (done) break;
+            const chunkStr = decoder.decode(value);
+            
+            if (isServerlessMode) {
+              const provider = settings.llmProvider;
+              if (provider === 'ollama') {
+                const lines = chunkStr.split('\n').filter(l => l.trim());
+                for (const line of lines) {
+                  try {
+                    const parsed = JSON.parse(line);
+                    if (parsed.message && parsed.message.content) {
+                      fullResponse += parsed.message.content;
+                      responsePlaceholder.textContent = fullResponse;
+                    }
+                  } catch (e) {
+                    console.warn('Failed to parse Ollama chunk line:', e, line);
+                  }
+                }
+              } else {
+                // LM Studio / OpenAI data: {...} SSE format
+                const lines = chunkStr.split('\n');
+                for (const line of lines) {
+                  if (line.startsWith('data: ')) {
+                    const dataStr = line.slice(6).trim();
+                    if (dataStr === '[DONE]') continue;
+                    try {
+                      const parsed = JSON.parse(dataStr);
+                      if (parsed.choices && parsed.choices[0].delta && parsed.choices[0].delta.content) {
+                        fullResponse += parsed.choices[0].delta.content;
+                        responsePlaceholder.textContent = fullResponse;
+                      }
+                    } catch (e) {
+                      console.warn('Failed to parse OpenAI chunk line:', e, line);
+                    }
+                  }
+                }
+              }
+            } else {
+              fullResponse += chunkStr;
+              responsePlaceholder.textContent = fullResponse;
+            }
+            chatMessages.scrollTop = chatMessages.scrollHeight;
+          }
         }
-
-        const reader = chatRes.body.getReader();
-        const decoder = new TextDecoder();
-        let fullResponse = '';
-
-        while (true) {
-          const { done, value } = await reader.read();
-          if (done) break;
-          const chunkStr = decoder.decode(value);
-          fullResponse += chunkStr;
-          responsePlaceholder.textContent = fullResponse;
-          chatMessages.scrollTop = chatMessages.scrollHeight;
-        }
-
       } catch (err) {
         appendMessage('system', 'Error answering query: ' + err.message);
       }
@@ -511,7 +886,7 @@
 
     // Initial load
     loadSettings();
-    updateStats();
+    detectBackend();
 
     // Register Service Worker
     if ('serviceWorker' in navigator) {
