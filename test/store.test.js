@@ -120,6 +120,16 @@ test('export → import round-trips a collection (replace mode)', () => {
   assert.strictEqual(dst.search('docs', seededVec(5), 1)[0].metadata.text, src.search('docs', seededVec(5), 1)[0].metadata.text);
 });
 
+test('import rejects a collection name that could escape the data dir', () => {
+  const store = new WasmPolarQuantizedStore(new MemoryStorageAdapter(), DIM, { bits: 3 });
+  const malicious = {
+    format: 'potatorag-export', version: 1,
+    collection: '../../evil', dim: DIM, bits: 3, seed: 42, model: null,
+    count: 0, ids: [], meta: [], bin: '',
+  };
+  assert.throws(() => store.importCollection(malicious), /Invalid collection name/);
+});
+
 test('import rejects an export with incompatible quantizer params', () => {
   const src = new WasmPolarQuantizedStore(new MemoryStorageAdapter(), 768, { bits: 3 });
   src.set('docs', 'a', seededVec(1));

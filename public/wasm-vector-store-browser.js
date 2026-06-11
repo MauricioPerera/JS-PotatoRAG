@@ -215,6 +215,9 @@ class BrowserWasmVectorStore {
   importCollection(data, opts = {}) {
     const mode = opts.mode || 'replace';
     if (!data || data.format !== 'potatorag-export') throw new Error('Unrecognized export format.');
+    if (typeof data.collection !== 'string' || !/^[a-zA-Z0-9_]+$/.test(data.collection)) {
+      throw new Error('Invalid collection name in export (must match [a-zA-Z0-9_]).');
+    }
     if (data.dim !== this.dim || data.bits !== this.bits || data.seed !== this.seed) {
       throw new Error(
         `Incompatible quantizer params: export has dim=${data.dim} bits=${data.bits} seed=${data.seed}, ` +
