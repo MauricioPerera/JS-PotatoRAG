@@ -89,9 +89,27 @@ El servidor backend se iniciará en **`http://localhost:3005`** (escucha solo en
 
 ### 4. Probar en el Navegador
 Abre `http://localhost:3005` en tu navegador:
-*   Para un funcionamiento **in-process**: Selecciona **LLM Provider: Local ONNX (Gemma-3 270M)** y **Embedding Source: Local ONNX (embeddinggemma)** en la configuración lateral. El primer mensaje descargará y cacheará automáticamente los modelos (~150MB y ~300MB) desde Hugging Face. **Air-gapped es total solo DESPUÉS de esa primera descarga**: la librería Transformers.js ya viene incluida localmente (`public/vendor/`), pero los pesos de los modelos se bajan en el primer uso y quedan cacheados a partir de ahí.
+*   Para un funcionamiento **in-process**: Selecciona **LLM Provider: Local ONNX** y **Embedding Source: Local ONNX** en la configuración lateral. El primer mensaje descargará y cacheará automáticamente los modelos desde Hugging Face. **Ojo: qué modelos se bajan depende del modo** (ver la tabla "Qué modelos corre cada modo" más abajo) — con backend Node son los de Gemma (~150 + ~300 MB); en modo navegador puro son MiniLM + Qwen-0.5B (~23 + ~786 MB). La etiqueta "Gemma-3 270M" del menú aplica al modo servidor; en navegador ese mismo botón corre Qwen. **Air-gapped es total solo DESPUÉS de esa primera descarga**, y de forma parcial: la librería Transformers.js viene local (`public/vendor/`), pero el runtime ONNX (`ort-wasm-*.wasm`) y los pesos de los modelos se bajan de CDN en el primer uso.
 *   Para usar **LM Studio**: Enciende el servidor de LM Studio en el puerto `1234`, carga un modelo de chat y de embeddings, y ajusta el panel lateral a `LM Studio / OpenAI compatible` y base URL `http://localhost:1234/v1`.
 *   Para usar **Ollama**: Enciende Ollama en el puerto `11434` y selecciona `Ollama Native API`.
+
+---
+
+## 🧩 Qué modelos corre cada modo (¡importante!)
+
+El proyecto tiene **dos caminos de ejecución que usan modelos DISTINTOS y hardcodeados**. La marca "Gemma" del README y los benchmarks aplica **solo al modo servidor**.
+
+| | **Modo servidor** (Node, `server.js`) | **Modo navegador** (serverless, `index.html`) |
+| :--- | :--- | :--- |
+| Embeddings (local ONNX) | `embeddinggemma-300m` · **768-D** | `Xenova/all-MiniLM-L6-v2` · **384-D** |
+| LLM in-process (local ONNX) | `gemma-3-270m-it` (q4) | `Qwen2.5-0.5B-Instruct` (q4, **~786 MB**) |
+| Cuándo se activa | hay backend Node escuchando | no hay backend → fallback automático |
+
+El modo navegador se activa solo cuando la PWA no encuentra el backend (sirviendo `public/` como sitio estático). Sus modelos están fijados en el código ([`index.html`](public/index.html)), no son configurables desde la UI.
+
+**Consecuencia: los dos modos NO son intercambiables.** Como usan modelos y dimensiones distintos, la colección se llama distinto (`docs_<modelo>_<dim>`) y los vectores no son comparables. Una base creada en el servidor (embeddinggemma, 768-D) **no se puede consultar ni importar desde el navegador** (MiniLM, 384-D), y viceversa. El Export/Import funciona **dentro del mismo modo**, no entre modos.
+
+**Rendimiento medido en navegador** (CPU/WASM, Chrome): embeddings MiniLM ~**11 ms/chunk** (carga 23 MB) — rápido y usable; el LLM Qwen-0.5B es una descarga de **~786 MB** y corre en **CPU/WASM** (el código no activa WebGPU), por lo que la generación in-browser es **muy lenta / poco práctica** en máquinas comunes. Para generación usable en modo navegador, delegá el LLM a Ollama/LM Studio del equipo, o activá `device: 'webgpu'` en el código.
 
 ---
 
