@@ -1,0 +1,42 @@
+# JS-PotatoRAG — static vector DB
+
+> A retrieval-augmented vector database published as static files. Documents are
+> embedded and 3-bit polar-quantized ahead of time; an agent fetches the index
+> and runs the search itself with the zero-dependency `js-vector-store` library.
+> No server, no API process — everything is served statically (e.g. GitHub Pages).
+
+## How it works
+
+This site does NOT run code. It serves a prebuilt index plus the search library.
+To query it, an agent downloads the index and searches locally:
+
+1. `GET /rag/manifest.json` — describes the published collection: `collection`,
+   `dim`, `bits`, `seed`, and `model` (the embedding model the index was built
+   with — you MUST embed your query with the same model).
+2. `GET /rag/{collection}.p3.json` and `GET /rag/{collection}.p3.bin` — the index
+   (ids + chunk text metadata, and the packed quantized vectors).
+3. `GET /js-vector-store.js` — the search library (pure JS, zero dependencies,
+   runs in Node and the browser).
+4. Embed the query text with `model`, then run a top-k cosine search.
+
+## Files
+
+- `GET /rag/manifest.json` — index manifest (collection, dim, bits, seed, model)
+- `GET /rag/{collection}.p3.json` — ids + metadata (`{text: ...}` per chunk)
+- `GET /rag/{collection}.p3.bin` — packed 3-bit polar-quantized vectors
+- `GET /js-vector-store.js` — `PolarQuantizedStore` + `MemoryStorageAdapter`
+
+## Notes for agents
+
+- The site is static and read-only. There is NO query endpoint, NO POST, NO auth.
+  Do not look for `/api/...` — searching happens in YOUR runtime, not here.
+- The index is a snapshot. Re-fetch the files to pick up republished data.
+- You MUST embed the query with the model named in `manifest.model` (different
+  model or dimension ⇒ garbage results). The store rejects mismatched dim/bits/seed.
+- Cache the three index files for the session; they are immutable per snapshot.
+
+## Skills
+
+Remote Agent Skill published by this site (see https://github.com/MauricioPerera/llms-txt-skills for the format).
+
+- [rag-query](/skills/rag-query/SKILL.md): query this static vector database — fetch the index, embed the query with the index's model, and run a local top-k semantic search with js-vector-store. <!-- skill: {"version":"1.0.0","license":"MIT"} -->

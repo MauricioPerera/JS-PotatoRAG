@@ -1354,6 +1354,20 @@ class PolarQuantizedStore {
   _load(col) {
     if (this._collections.has(col)) return this._collections.get(col);
     const manifest = this._adapter.readJson(this._jsonFile(col));
+    // Guard: the polar quantizer is parametrized by (dim, bits, seed). Reading a
+    // collection quantized with different params yields silently-garbage scores.
+    // Fail loudly instead — this matters for the agent/static-consumer path.
+    if (manifest) {
+      const mDim = manifest.dim, mBits = manifest.bits, mSeed = manifest.seed;
+      if ((mDim !== undefined && mDim !== this.dim) ||
+          (mBits !== undefined && mBits !== this.bits) ||
+          (mSeed !== undefined && mSeed !== this.seed)) {
+        throw new Error(
+          `PolarQuantizedStore: collection '${col}' was quantized with dim=${mDim} bits=${mBits} seed=${mSeed}, ` +
+          `but this store uses dim=${this.dim} bits=${this.bits} seed=${this.seed}.`
+        );
+      }
+    }
     const ids   = manifest ? manifest.ids  : [];
     const meta  = manifest ? manifest.meta : [];
     const model = manifest?.model || this.defaultModel || null;
