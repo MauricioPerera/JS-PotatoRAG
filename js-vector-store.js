@@ -1163,11 +1163,15 @@ class BinaryQuantizedStore {
 // Theta se cuantiza a 3 bits (8 niveles) en [-PI, PI].
 // Resultado: ceil(dim/2) * 3 bits = ceil(dim*3/16) bytes por vector → ~21x compresion.
 //
-// Antes de cuantizar, aplica una rotacion aleatoria determinista (Haar-like)
-// para distribuir la energia uniformemente y mejorar la cuantizacion uniforme.
+// Antes de cuantizar aplica una "rotacion" determinista. OJO: NO es un Hadamard
+// ni una rotacion que mezcle coordenadas — es una PERMUTACION CON SIGNOS
+// (ortogonal: preserva la norma, pero no distribuye energia entre pares). Solo
+// aleatoriza que coordenadas se emparejan y sus signos. Ver docs/QUANTIZATION.md.
 //
-// Similitud: reconstruye vectores unitarios desde angulos cuantizados y calcula
-// coseno directo. Mas preciso que Binary (1-bit) con compresion similar.
+// Similitud: reconstruye vectores unitarios POR PAR desde los angulos cuantizados
+// (descarta la magnitud de cada par) y hace producto punto contra la query. El
+// score resultante NO esta acotado a [0,1]. Mas preciso que Binary (1-bit) con
+// compresion similar; ver docs/QUANTIZATION.md para limites medidos y trade-offs.
 
 class PolarQuantizedStore {
   /**
@@ -1222,13 +1226,14 @@ class PolarQuantizedStore {
     return state;
   }
 
-  /** Genera una rotacion pseudo-aleatoria determinista.
-   *  Usa vectores aleatorios + Gram-Schmidt simplificado en pares.
-   *  No es una rotacion ortogonal completa (O(n^2)), pero distribuye energia
-   *  suficientemente para mejorar cuantizacion uniforme. */
+  /** Genera una permutacion-con-signos determinista (sign flip + shuffle).
+   *  ES ortogonal (preserva la norma) pero NO mezcla coordenadas: no decorrela
+   *  ni distribuye energia como lo haria un Hadamard/FWHT real. Su unico efecto
+   *  es aleatorizar que coordenadas se emparejan y sus signos. Para embeddings
+   *  ya bien distribuidos (p.ej. embeddinggemma, PR ~200/768) alcanza; para
+   *  embeddings con energia concentrada queda corta. Ver docs/QUANTIZATION.md. */
   _generateRotation(dim, seed) {
-    // Generamos dim vectores de signos aleatorios para fast rotation
-    // (Hadamard-like: multiplicar por signos aleatorios + shuffle)
+    // Signos aleatorios deterministas (xorshift32 sembrado).
     const signs = new Float64Array(dim);
     let state = seed || 42;
     for (let i = 0; i < dim; i++) {
