@@ -49,6 +49,9 @@ h1, h2, h3 {
   display: flex;
   flex-direction: column;
   padding: 24px;
+  height: 100vh;
+  overflow-y: auto;
+  flex-shrink: 0;
 }
 
 .brand {
@@ -573,5 +576,68 @@ h1, h2, h3 {
 .btn-install:hover {
   transform: translateY(-1px);
   box-shadow: 0 4px 12px rgba(139, 92, 246, 0.6);
+}
+
+/* Custom Scrollbar for Dark Mode */
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+::-webkit-scrollbar-track {
+  background: var(--bg-app);
+}
+
+::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.1);
+  border-radius: 4px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: var(--primary);
+}
+
+/* Download Progress Banner */
+.download-progress-banner {
+  display: none;
+  background-color: rgba(139, 92, 246, 0.15);
+  border-bottom: 1px solid rgba(139, 92, 246, 0.3);
+  padding: 10px 32px;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  font-size: 13px;
+  color: var(--text-primary);
+  animation: fadeIn 0.3s ease;
+}
+
+.progress-bar-bg {
+  flex-grow: 1;
+  height: 6px;
+  background-color: rgba(255, 255, 255, 0.08);
+  border-radius: 3px;
+  overflow: hidden;
+}
+
+.progress-bar-fill {
+  height: 100%;
+  background-color: var(--primary);
+  width: 0%;
+  transition: width 0.2s ease;
+}
+
+.percent-label {
+  font-family: 'Fira Code', monospace;
+  font-size: 12px;
+  color: var(--accent);
+  min-width: 40px;
+  text-align: right;
+}
+
+/* Badge Info for Serverless Browser Mode */
+.badge-info {
+  background-color: rgba(59, 130, 246, 0.15);
+  color: #60a5fa;
+  border: 1px solid rgba(59, 130, 246, 0.3);
 }
 
