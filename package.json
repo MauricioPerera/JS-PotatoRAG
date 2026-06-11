@@ -1,0 +1,17 @@
+{
+  "name": "js-potatorag",
+  "version": "1.0.0",
+  "description": "Port of PotatoRAG to a pure JavaScript stack utilizing js-vector-store (PolarQuantizedStore)",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "@huggingface/transformers": "^4.2.0",
+    "cors": "^2.8.5",
+    "express": "^4.21.2",
+    "ollama": "^0.6.2"
+  },
+  "author": "Antigravity",
+  "license": "MIT"
+}
