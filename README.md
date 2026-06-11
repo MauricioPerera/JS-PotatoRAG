@@ -172,6 +172,36 @@ Variables: `MEMORY_API_URL`, `MEMORY_NAMESPACE`, `EMBED_SOURCE` (`ollama`/`local
 
 ---
 
+## 🌐 RAG estático consumible por un agente (GitHub Pages)
+
+Podés publicar tu base como **archivos estáticos** y que un agente la consulte sin servidor: GitHub Pages (o cualquier host estático) sirve el índice + la librería de búsqueda, y el agente **baja el índice y hace la búsqueda él mismo** con `js-vector-store` (JS puro, sin dependencias, corre en Node). No hay API que correr — Pages no ejecuta código.
+
+```
+tu-sitio/ (GitHub Pages)
+├── llms.txt                      # describe el sitio + sección ## Skills
+├── skills/rag-query/SKILL.md     # instrucciones para el agente
+├── js-vector-store.js            # la función de búsqueda (estática)
+└── rag/
+    ├── manifest.json             # collection, dim, bits, seed, model
+    ├── <collection>.p3.json      # ids + texto de cada chunk
+    └── <collection>.p3.bin       # vectores cuantizados
+```
+
+**Publicar el índice** (desde una colección ya ingestada en `data/vectors/`):
+
+```bash
+npm run publish:index -- docs_embeddinggemma_768 embeddinggemma
+# copia los .p3 a public/rag/ y escribe public/rag/manifest.json
+```
+
+Luego commiteás `public/` a tu rama de Pages.
+
+**Cómo lo consume un agente** (vía el estándar [llms.txt Skills](https://github.com/MauricioPerera/llms-txt-skills)): un agente con la skill `llms-txt-aware` que apunte a tu sitio hace `GET /llms.txt`, descubre la skill `rag-query`, y sigue su receta: baja `manifest.json` + los `.p3` + `js-vector-store.js`, **embebe la query con el modelo de `manifest.model`**, y corre `store.search()` localmente. Devuelve los chunks (`metadata.text`) como contexto.
+
+> **Requisito clave**: el agente debe embeber la query con el **mismo modelo** que generó el índice (lo dice `manifest.model`). Distinto modelo/dimensión ⇒ el store lo rechaza (load guard) o da resultados sin sentido. El test [`test/consume.test.js`](test/consume.test.js) verifica que un índice escrito por el servidor (WASM) se consume correctamente con el `js-vector-store` puro que baja el agente.
+
+---
+
 ## ⚙️ Estructura del Proyecto
 
 *   `server.js`: Servidor Express que gestiona el enrutamiento de peticiones, la carga de los modelos ONNX y la decodificación de flujos SSE.

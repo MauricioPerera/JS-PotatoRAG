@@ -6,3 +6,6 @@ benchmark_gemma3_results.json
 benchmark_recall_results.md
 test_chat_stream.js
 .DS_Store
+
+# Published static index (generated data, not source)
+public/rag/

@@ -6,6 +6,7 @@
   "scripts": {
     "start": "node server.js",
     "mcp": "node mcp-memory-server.mjs",
+    "publish:index": "node scripts/publish-index.js",
     "test": "node --test",
     "benchmark:recall": "node benchmark_recall.js"
   },
